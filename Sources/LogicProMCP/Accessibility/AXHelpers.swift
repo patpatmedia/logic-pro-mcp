@@ -69,13 +69,15 @@ enum AXHelpers {
         of element: AXUIElement,
         role: String? = nil,
         title: String? = nil,
-        identifier: String? = nil
+        identifier: String? = nil,
+        description: String? = nil
     ) -> AXUIElement? {
         let children = getChildren(element)
         for child in children {
             if let role, getRole(child) != role { continue }
             if let title, getTitle(child) != title { continue }
             if let identifier, getIdentifier(child) != identifier { continue }
+            if let description, getDescription(child) != description { continue }
             return child
         }
         return nil
@@ -88,6 +90,7 @@ enum AXHelpers {
         role: String? = nil,
         title: String? = nil,
         identifier: String? = nil,
+        description: String? = nil,
         maxDepth: Int = 10
     ) -> AXUIElement? {
         guard maxDepth > 0 else { return nil }
@@ -96,12 +99,13 @@ enum AXHelpers {
             let roleMatch = role == nil || getRole(child) == role
             let titleMatch = title == nil || getTitle(child) == title
             let idMatch = identifier == nil || getIdentifier(child) == identifier
-            if roleMatch && titleMatch && idMatch {
+            let descMatch = description == nil || getDescription(child) == description
+            if roleMatch && titleMatch && idMatch && descMatch {
                 return child
             }
             if let found = findDescendant(
                 of: child, role: role, title: title, identifier: identifier,
-                maxDepth: maxDepth - 1
+                description: description, maxDepth: maxDepth - 1
             ) {
                 return found
             }
@@ -155,5 +159,30 @@ enum AXHelpers {
     /// Get the description of an element (kAXDescriptionAttribute).
     static func getDescription(_ element: AXUIElement) -> String? {
         getAttribute(element, kAXDescriptionAttribute)
+    }
+
+    /// Get the on-screen frame of an element (top-left origin, in global display points).
+    /// Returns nil if either position or size is unavailable.
+    static func elementFrame(_ element: AXUIElement) -> CGRect? {
+        var positionRef: AnyObject?
+        var sizeRef: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionRef) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let positionValue = positionRef, CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              let sizeValue = sizeRef, CFGetTypeID(sizeValue) == AXValueGetTypeID()
+        else { return nil }
+
+        var point = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &point),
+              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
+        else { return nil }
+        return CGRect(origin: point, size: size)
+    }
+
+    /// Center point of an element's on-screen frame, suitable for synthetic clicks.
+    static func elementCenter(_ element: AXUIElement) -> CGPoint? {
+        guard let frame = elementFrame(element) else { return nil }
+        return CGPoint(x: frame.midX, y: frame.midY)
     }
 }

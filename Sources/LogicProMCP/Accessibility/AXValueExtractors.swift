@@ -84,14 +84,15 @@ enum AXValueExtractors {
         return SliderRange(min: min, max: max)
     }
 
-    /// Read a track header and extract its basic state.
+    /// Read a track header (AXLayoutItem) and extract its basic state.
     static func extractTrackState(from header: AXUIElement, index: Int) -> TrackState {
         let name = extractTrackName(from: header)
-        let muted = extractTrackButtonState(from: header, prefix: "Mute") ?? false
-        let soloed = extractTrackButtonState(from: header, prefix: "Solo") ?? false
-        let armed = extractTrackButtonState(from: header, prefix: "Record") ?? false
-        let selected = extractSelectedState(header) ?? false
+        let muted = extractCheckboxByDescription(from: header, description: "Mute") ?? false
+        let soloed = extractCheckboxByDescription(from: header, description: "Solo") ?? false
+        let armed = extractCheckboxByDescription(from: header, description: "Record Enable") ?? false
+        let selected = extractTrackFocusState(from: header)
         let trackType = inferTrackType(from: header)
+        let (volume, pan) = extractTrackVolumePan(from: header)
 
         return TrackState(
             id: index,
@@ -101,8 +102,8 @@ enum AXValueExtractors {
             isSoloed: soloed,
             isArmed: armed,
             isSelected: selected,
-            volume: 0.0,
-            pan: 0.0,
+            volume: volume,
+            pan: pan,
             color: extractTrackColor(from: header)
         )
     }
@@ -158,28 +159,64 @@ enum AXValueExtractors {
     // MARK: - Private helpers
 
     private static func extractTrackName(from header: AXUIElement) -> String {
-        // Try static text first
+        // Logic 12.x: the name lives in the AXTextField's description (and value).
+        if let field = AXHelpers.findDescendant(of: header, role: kAXTextFieldRole, maxDepth: 4) {
+            if let desc = AXHelpers.getDescription(field), !desc.isEmpty, desc != "name" {
+                return desc
+            }
+            if let value = extractTextValue(field), !value.isEmpty {
+                return value
+            }
+        }
+        // Fallback: parse the layout item's own description: Track N “NAME”
+        if let parsed = parseNameFromLayoutDescription(AXHelpers.getDescription(header)) {
+            return parsed
+        }
         if let text = AXHelpers.findDescendant(of: header, role: kAXStaticTextRole, maxDepth: 3),
            let name = extractTextValue(text), !name.isEmpty {
-            return name
-        }
-        // Try text field
-        if let field = AXHelpers.findDescendant(of: header, role: kAXTextFieldRole, maxDepth: 3),
-           let name = extractTextValue(field), !name.isEmpty {
             return name
         }
         return AXHelpers.getTitle(header) ?? "Untitled"
     }
 
-    private static func extractTrackButtonState(from header: AXUIElement, prefix: String) -> Bool? {
-        let buttons = AXHelpers.findAllDescendants(of: header, role: kAXButtonRole, maxDepth: 4)
-        for button in buttons {
-            let desc = AXHelpers.getDescription(button) ?? AXHelpers.getTitle(button) ?? ""
-            if desc.hasPrefix(prefix) || desc.lowercased().contains(prefix.lowercased()) {
-                return extractButtonState(button)
-            }
+    /// Parse a name out of an AXLayoutItem description formatted as: Track N “NAME”
+    private static func parseNameFromLayoutDescription(_ desc: String?) -> String? {
+        guard let desc else { return nil }
+        if let open = desc.firstIndex(of: "\u{201C}"),  // “
+           let close = desc.lastIndex(of: "\u{201D}"),   // ”
+           open < close {
+            return String(desc[desc.index(after: open)..<close])
         }
         return nil
+    }
+
+    /// Read a checkbox state by its AXDescription within a track header.
+    private static func extractCheckboxByDescription(from header: AXUIElement, description: String) -> Bool? {
+        let boxes = AXHelpers.findAllDescendants(of: header, role: kAXCheckBoxRole, maxDepth: 4)
+        guard let box = boxes.first(where: { AXHelpers.getDescription($0) == description }) else {
+            return nil
+        }
+        return extractCheckboxState(box)
+    }
+
+    /// Read the "Has Focus" radio-button state used by Logic to mark the selected track.
+    private static func extractTrackFocusState(from header: AXUIElement) -> Bool {
+        let radios = AXHelpers.findAllDescendants(of: header, role: kAXRadioButtonRole, maxDepth: 4)
+        guard let focus = radios.first(where: { AXHelpers.getDescription($0) == "Has Focus" }) else {
+            return false
+        }
+        return extractCheckboxState(focus) ?? false
+    }
+
+    /// Read the volume (and pan, if present) sliders from a track header.
+    /// Volume slider is described "Volume"; the pan slider is the remaining slider.
+    private static func extractTrackVolumePan(from header: AXUIElement) -> (Double, Double) {
+        let sliders = AXHelpers.findAllDescendants(of: header, role: kAXSliderRole, maxDepth: 4)
+        let volumeSlider = sliders.first { AXHelpers.getDescription($0) == "Volume" }
+        let panSlider = sliders.first { $0 != volumeSlider }
+        let volume = volumeSlider.flatMap { extractSliderValue($0) } ?? 0.0
+        let pan = panSlider.flatMap { extractSliderValue($0) } ?? 0.0
+        return (volume, pan)
     }
 
     private static func inferTrackType(from header: AXUIElement) -> TrackType {

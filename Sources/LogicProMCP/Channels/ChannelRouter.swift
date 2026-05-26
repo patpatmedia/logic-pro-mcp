@@ -29,8 +29,11 @@ actor ChannelRouter {
         "track.get_tracks":           [.accessibility],
         "track.get_selected":         [.accessibility],
 
-        // Track mutation — AX click, fallback to keyboard
-        "track.select":               [.accessibility, .cgEvent],
+        // Track mutation — AX only (cgEvent has no select mapping; keeping it as a
+        // fallback only masked the real AX error). DIAGNOSTIC: surface AX result.
+        "track.select":               [.accessibility],
+        "track.select_add":           [.accessibility],
+        "track.create_stack":         [.accessibility],
         "track.create_audio":         [.cgEvent, .accessibility],
         "track.create_instrument":    [.cgEvent, .accessibility],
         "track.create_drummer":       [.cgEvent, .accessibility],

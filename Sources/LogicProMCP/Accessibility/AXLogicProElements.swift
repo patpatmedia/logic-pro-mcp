@@ -50,23 +50,36 @@ enum AXLogicProElements {
     // MARK: - Tracks
 
     /// Find the track header area containing individual track rows.
+    /// In Logic Pro 12.x the arrange track headers live in an AXGroup whose
+    /// description is "Tracks header"; its children are one AXLayoutItem per track.
     static func getTrackHeaders() -> AXUIElement? {
         guard let window = mainWindow() else { return nil }
-        // Track headers are typically in a scrollable list/table area
+        // Logic Pro 12.x: the track header column is an AXGroup described "Tracks header".
+        if let area = AXHelpers.findDescendant(of: window, role: kAXGroupRole, description: "Tracks header", maxDepth: 14) {
+            return area
+        }
+        // Legacy / version fallbacks (older layouts).
         if let area = AXHelpers.findDescendant(of: window, role: kAXListRole, identifier: "Track Headers") {
             return area
         }
-        // Fallback: look for an AXScrollArea containing AXRow or AXGroup children
         if let area = AXHelpers.findDescendant(of: window, role: kAXScrollAreaRole, identifier: "Tracks") {
             return area
         }
         return AXHelpers.findDescendant(of: window, role: kAXOutlineRole, maxDepth: 5)
     }
 
+    /// Track row elements within the header area (one AXLayoutItem per track).
+    private static func trackRows(in headers: AXUIElement) -> [AXUIElement] {
+        let children = AXHelpers.getChildren(headers)
+        let layoutItems = children.filter { AXHelpers.getRole($0) == kAXLayoutItemRole }
+        // Some layouts wrap rows directly; fall back to all children if no layout items.
+        return layoutItems.isEmpty ? children : layoutItems
+    }
+
     /// Find a track header at a specific index (0-based).
     static func findTrackHeader(at index: Int) -> AXUIElement? {
         guard let headers = getTrackHeaders() else { return nil }
-        let rows = AXHelpers.getChildren(headers)
+        let rows = trackRows(in: headers)
         guard index >= 0 && index < rows.count else { return nil }
         return rows[index]
     }
@@ -74,7 +87,7 @@ enum AXLogicProElements {
     /// Enumerate all track header rows.
     static func allTrackHeaders() -> [AXUIElement] {
         guard let headers = getTrackHeaders() else { return [] }
-        return AXHelpers.getChildren(headers)
+        return trackRows(in: headers)
     }
 
     // MARK: - Mixer
@@ -148,6 +161,43 @@ enum AXLogicProElements {
         return current
     }
 
+    /// Locate the "Create Track Stack…" command anywhere in the menu bar.
+    /// Language-tolerant: matches any menu item whose title contains "Stack"
+    /// (kept verbatim in localized builds, e.g. German "Track-Stack erstellen…"),
+    /// preferring one that also reads as a *create* action. Returns nil if the
+    /// menus haven't been populated yet — the caller should fall back to the
+    /// ⌘⇧D shortcut in that case.
+    static func findCreateTrackStackMenuItem() -> AXUIElement? {
+        guard let menuBar = getMenuBar() else { return nil }
+        var fallback: AXUIElement?
+        for top in AXHelpers.getChildren(menuBar) {
+            for submenu in AXHelpers.getChildren(top) {
+                for item in AXHelpers.getChildren(submenu) {
+                    let title = AXHelpers.getTitle(item) ?? ""
+                    guard title.localizedCaseInsensitiveContains("Stack") else { continue }
+                    if title.localizedCaseInsensitiveContains("Create")
+                        || title.localizedCaseInsensitiveContains("erstell") {
+                        return item
+                    }
+                    if fallback == nil { fallback = item }
+                }
+            }
+        }
+        return fallback
+    }
+
+    /// Find the modal sheet currently attached to the main window (e.g. the
+    /// Track Stack type chooser). Returns nil when no sheet is present — never
+    /// falls back to the window itself, so descendant searches can't stray into
+    /// the arrange area (whose track rows also expose AXRadioButtons).
+    static func frontSheet() -> AXUIElement? {
+        guard let window = mainWindow() else { return nil }
+        if let sheet = AXHelpers.findChild(of: window, role: kAXSheetRole) {
+            return sheet
+        }
+        return AXHelpers.findDescendant(of: window, role: kAXSheetRole, maxDepth: 4)
+    }
+
     // MARK: - Arrangement
 
     /// Find the main arrangement area (the timeline/tracks view).
@@ -161,35 +211,49 @@ enum AXLogicProElements {
 
     // MARK: - Track Controls
 
-    /// Find the mute button on a track header.
+    /// Find the mute control (AXCheckBox "Mute") on a track header.
     static func findTrackMuteButton(trackIndex: Int) -> AXUIElement? {
         guard let header = findTrackHeader(at: trackIndex) else { return nil }
-        return findButtonByDescriptionPrefix(in: header, prefix: "Mute")
-            ?? AXHelpers.findDescendant(of: header, role: kAXButtonRole, title: "M")
+        return findControlByDescription(in: header, role: kAXCheckBoxRole, description: "Mute")
+            ?? findButtonByDescriptionPrefix(in: header, prefix: "Mute")
     }
 
-    /// Find the solo button on a track header.
+    /// Find the solo control (AXCheckBox "Solo") on a track header.
     static func findTrackSoloButton(trackIndex: Int) -> AXUIElement? {
         guard let header = findTrackHeader(at: trackIndex) else { return nil }
-        return findButtonByDescriptionPrefix(in: header, prefix: "Solo")
-            ?? AXHelpers.findDescendant(of: header, role: kAXButtonRole, title: "S")
+        return findControlByDescription(in: header, role: kAXCheckBoxRole, description: "Solo")
+            ?? findButtonByDescriptionPrefix(in: header, prefix: "Solo")
     }
 
-    /// Find the record-arm button on a track header.
+    /// Find the record-arm control (AXCheckBox "Record Enable") on a track header.
     static func findTrackArmButton(trackIndex: Int) -> AXUIElement? {
         guard let header = findTrackHeader(at: trackIndex) else { return nil }
-        return findButtonByDescriptionPrefix(in: header, prefix: "Record")
-            ?? AXHelpers.findDescendant(of: header, role: kAXButtonRole, title: "R")
+        return findControlByDescription(in: header, role: kAXCheckBoxRole, description: "Record Enable")
+            ?? findButtonByDescriptionPrefix(in: header, prefix: "Record")
+    }
+
+    /// Find the "Has Focus" selection control (AXRadioButton) on a track header.
+    static func findTrackFocusButton(trackIndex: Int) -> AXUIElement? {
+        guard let header = findTrackHeader(at: trackIndex) else { return nil }
+        return findControlByDescription(in: header, role: kAXRadioButtonRole, description: "Has Focus")
     }
 
     /// Find the track name text field on a header.
     static func findTrackNameField(trackIndex: Int) -> AXUIElement? {
         guard let header = findTrackHeader(at: trackIndex) else { return nil }
-        return AXHelpers.findDescendant(of: header, role: kAXStaticTextRole, maxDepth: 4)
-            ?? AXHelpers.findDescendant(of: header, role: kAXTextFieldRole, maxDepth: 4)
+        return AXHelpers.findDescendant(of: header, role: kAXTextFieldRole, maxDepth: 4)
+            ?? AXHelpers.findDescendant(of: header, role: kAXStaticTextRole, maxDepth: 4)
     }
 
     // MARK: - Helpers
+
+    /// Find a descendant control of a given role whose AXDescription matches exactly.
+    static func findControlByDescription(
+        in element: AXUIElement, role: String, description: String
+    ) -> AXUIElement? {
+        let controls = AXHelpers.findAllDescendants(of: element, role: role, maxDepth: 4)
+        return controls.first { AXHelpers.getDescription($0) == description }
+    }
 
     private static func findButtonByDescriptionPrefix(
         in element: AXUIElement, prefix: String

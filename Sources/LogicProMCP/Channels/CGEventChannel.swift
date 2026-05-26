@@ -129,7 +129,11 @@ actor CGEventChannel: Channel {
 
     // MARK: - Event Posting
 
-    /// Post a key-down/key-up pair to a specific PID.
+    /// Post a key-down/key-up pair as a real key press. Logic does NOT register
+    /// `postToPid` key events (verified live — same reason track selection clicks and
+    /// ⌘⇧D must use the HID tap); they have to arrive on the global HID tap exactly like
+    /// a physical key press. That delivers to the frontmost app, so Logic is activated
+    /// first. `pid` is kept for the activation/log only.
     private func postKeyEvent(keyCode: CGKeyCode, flags: CGEventFlags, pid: pid_t) -> Bool {
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             Log.error("Failed to create CGEventSource", subsystem: "cgEvent")
@@ -145,10 +149,13 @@ actor CGEventChannel: Channel {
         keyDown.flags = flags
         keyUp.flags = flags
 
-        keyDown.postToPid(pid)
-        keyUp.postToPid(pid)
+        // Bring Logic to the front so the HID-tap key press lands in it.
+        _ = ProcessUtils.activateLogicPro()
+        usleep(120_000)
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
 
-        Log.debug("Posted key \(keyCode) flags \(flags.rawValue) to PID \(pid)", subsystem: "cgEvent")
+        Log.debug("Posted key \(keyCode) flags \(flags.rawValue) via HID tap (Logic pid \(pid))", subsystem: "cgEvent")
         return true
     }
 }

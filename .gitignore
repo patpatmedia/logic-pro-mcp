@@ -7,3 +7,6 @@ DerivedData/
 .netrc
 *.xcodeproj
 Package.resolved
+
+# Local rollback copies of the built binary (not source)
+*.orig-rollback

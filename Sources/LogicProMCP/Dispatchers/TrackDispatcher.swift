@@ -7,13 +7,16 @@ struct TrackDispatcher {
         description: """
             Track actions in Logic Pro. \
             Commands: select, create_audio, create_instrument, create_drummer, \
-            create_external_midi, delete, duplicate, rename, mute, solo, arm, set_color. \
+            create_external_midi, create_stack, delete, duplicate, rename, mute, solo, arm, set_color. \
             Params by command: \
             select -> { index: Int } or { name: String }; \
             rename -> { index: Int, name: String }; \
             mute/solo/arm -> { index: Int, enabled: Bool }; \
             set_color -> { index: Int, color: Int } (Logic color index 0-24); \
             create_* -> {} (creates at current position); \
+            create_stack -> { indices: [Int], type: String } — groups the given tracks \
+            into a Track Stack ("folder" (default) or "summing"); omit indices to use the \
+            current selection; \
             delete/duplicate -> { index: Int }
             """,
         inputSchema: .object([
@@ -75,6 +78,44 @@ struct TrackDispatcher {
 
         case "create_external_midi":
             let result = await router.route(operation: "track.create_external_midi")
+            return CallTool.Result(content: [.text(result.message)], isError: !result.isSuccess)
+
+        case "create_stack":
+            // Resolve the target track indices: an `indices` array, or fall back
+            // to the currently selected tracks if none are given.
+            let indices: [Int] = (params["indices"]?.arrayValue ?? []).compactMap { $0.intValue }
+            let type = params["type"]?.stringValue ?? "folder"
+
+            if !indices.isEmpty {
+                // Build a clean selection: first track replaces the selection,
+                // the rest extend it additively.
+                let first = await router.route(
+                    operation: "track.select",
+                    params: ["index": String(indices[0])]
+                )
+                guard first.isSuccess else {
+                    return CallTool.Result(content: [.text(first.message)], isError: true)
+                }
+                for index in indices.dropFirst() {
+                    let add = await router.route(
+                        operation: "track.select_add",
+                        params: ["index": String(index)]
+                    )
+                    guard add.isSuccess else {
+                        return CallTool.Result(content: [.text(add.message)], isError: true)
+                    }
+                }
+            }
+
+            // Pass the requested indices through so the channel can verify the live
+            // selection matches before triggering — guards against stacking wrong tracks.
+            let result = await router.route(
+                operation: "track.create_stack",
+                params: [
+                    "type": type,
+                    "indices": indices.map(String.init).joined(separator: ","),
+                ]
+            )
             return CallTool.Result(content: [.text(result.message)], isError: !result.isSuccess)
 
         case "delete":
@@ -150,7 +191,7 @@ struct TrackDispatcher {
 
         default:
             return CallTool.Result(
-                content: [.text("Unknown track command: \(command). Available: select, create_audio, create_instrument, create_drummer, create_external_midi, delete, duplicate, rename, mute, solo, arm, set_color")],
+                content: [.text("Unknown track command: \(command). Available: select, create_audio, create_instrument, create_drummer, create_external_midi, create_stack, delete, duplicate, rename, mute, solo, arm, set_color")],
                 isError: true
             )
         }
