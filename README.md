@@ -1,5 +1,19 @@
 # Logic Pro MCP Server
 
+> ## 🔧 What this fork fixes
+>
+> Logic Pro exposes a largely **read-only** Accessibility layer for tracks: writing AX
+> attributes, pressing AX controls, and `postToPid` mouse/keyboard events are silently
+> ignored. Only events delivered on the global **HID tap** (`.cghidEventTap`) actually take
+> effect. This fork reroutes the affected actions accordingly and adds verification + safety
+> checks so they work reliably on current Logic Pro:
+>
+> - **Track selection** — real HID clicks with read-back verification (AX/`postToPid` did not move the selection).
+> - **Track Stacks** (`create_stack`) — triggered via HID ⌘⇧D, with a **safety gate** that verifies the live selection exactly matches the requested tracks before creating, so it can never stack the wrong track.
+> - **Track creation & duplication** — `create_audio` (⌥⌘A), `duplicate` (⌘D) and other key commands now go through the HID tap (they were silent no-ops via `postToPid`).
+> - **Rename** — direct AX value-set for Track Stack masters; for regular tracks, a real double-click into edit mode then AX-set on the focused field (no synthetic typing, which Logic ignored and which could trigger stray global commands).
+> - Builds on an earlier fix for reading track headers (names / mute / solo / selection).
+
 [![Swift 6.0+](https://img.shields.io/badge/Swift-6.0+-F05138.svg)](https://swift.org)
 [![macOS 14+](https://img.shields.io/badge/macOS-14+-000000.svg?logo=apple)](https://developer.apple.com/macos/)
 [![MCP SDK 0.10](https://img.shields.io/badge/MCP_SDK-0.10-blue.svg)](https://github.com/modelcontextprotocol/swift-sdk)
