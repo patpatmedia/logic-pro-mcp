@@ -62,6 +62,7 @@ actor StatePoller {
 
             if shouldPollTracks {
                 await pollTracks(axChannel: axChannel, cache: cache)
+                await pollProject(axChannel: axChannel, cache: cache)
             }
 
             // Sleep until next poll
@@ -109,6 +110,29 @@ actor StatePoller {
             await cache.updateTracks(tracks)
         } catch {
             Log.debug("Tracks decode failed: \(error)", subsystem: "poller")
+        }
+    }
+
+    /// Poll project info. Without this nothing ever wrote to the project cache, so
+    /// `logic://project/info` and the `project` field in the health report stayed empty
+    /// even with a project open the whole time.
+    private func pollProject(axChannel: AccessibilityChannel, cache: StateCache) async {
+        let result = await axChannel.execute(operation: "project.get_info", params: [:])
+        guard case .success(let json) = result else {
+            Log.debug("Project poll failed: \(result.message)", subsystem: "poller")
+            return
+        }
+        guard let data = json.data(using: .utf8) else { return }
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            var info = try decoder.decode(ProjectInfo.self, from: data)
+            // The AX channel only sees the window title; the track count is already in
+            // the cache from the tracks poll.
+            info.trackCount = await cache.getTracks().count
+            await cache.updateProject(info)
+        } catch {
+            Log.debug("Project decode failed: \(error)", subsystem: "poller")
         }
     }
 

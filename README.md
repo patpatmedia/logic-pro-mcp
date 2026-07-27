@@ -13,6 +13,40 @@
 > - **Track creation & duplication** — `create_audio` (⌥⌘A), `duplicate` (⌘D) and other key commands now go through the HID tap (they were silent no-ops via `postToPid`).
 > - **Rename** — direct AX value-set for Track Stack masters; for regular tracks, a real double-click into edit mode then AX-set on the focused field (no synthetic typing, which Logic ignored and which could trigger stray global commands).
 > - Builds on an earlier fix for reading track headers (names / mute / solo / selection).
+>
+> ### Round two — findings from a 57-track production session
+>
+> - **No more silent success.** `create_audio`, `create_instrument`, `create_drummer`,
+>   `create_external_midi`, `duplicate`, `delete` and vertical zoom are verified against
+>   Logic's real track list (row count / row height) and return an error stating that
+>   nothing changed. `sent: true` used to be reported for key commands Logic never
+>   executed, after which callers worked with track indices that did not exist.
+> - **Modal dialogs are detected.** While an alert such as *"Do you want to use the audio
+>   device …?"* holds the focus, Logic drops every keystroke and click. Every UI-driving
+>   command now checks first and reports the dialog's own text instead of failing with an
+>   unrelated low-level error. It never clicks such a dialog away — those questions are
+>   the user's.
+> - **Auto-scroll (`logic_tracks`).** Header rows are scrolled into view before being
+>   clicked, so projects with more tracks than fit on screen are usable at all. The
+>   visible area is taken from the enclosing `AXScrollArea` — the `Tracks header` group
+>   reports the whole scroll *content* as its frame, which made every row look visible.
+> - **`move` — reorder tracks** (`{index, before}`), the drag Logic exposes no command
+>   for. Upwards only and verified by comparing the resulting track order; a downward
+>   request is refused with the workaround (build lists bottom-up) rather than guessing at
+>   an offset Logic does not handle predictably.
+> - **Drummer / external MIDI tracks** go through their Track-menu items instead of guessed
+>   key chords, with an `AXEnabled` check first — `kAXPressAction` returns `.success` on a
+>   *disabled* menu item, which is a pure false positive.
+> - **`set_zoom`** actually works: `{level: "in"|"out"|"fit", axis: "horizontal"|"vertical",
+>   steps: 1-10}`. It previously mapped to nothing and always failed.
+> - **`volume`/`pan` are `null`, not `0`,** when Logic doesn't expose the header sliders
+>   (small track heights). A `0` there was indistinguishable from a project that had lost
+>   its levels.
+> - **Honest diagnostics** — track `type` is derived from the row's controls (and detects
+>   Track Stack masters) instead of always reporting `unknown`; `transport_age_sec` says
+>   `never` instead of ≈2000 years when no transport read has ever succeeded; the project
+>   name is actually polled; the router reports every channel's error instead of only the
+>   last one.
 
 [![Swift 6.0+](https://img.shields.io/badge/Swift-6.0+-F05138.svg)](https://swift.org)
 [![macOS 14+](https://img.shields.io/badge/macOS-14+-000000.svg?logo=apple)](https://developer.apple.com/macos/)
@@ -48,7 +82,7 @@ Each command routes through the fastest available channel, with automatic fallba
 | Tool | Commands | Examples |
 |------|----------|----------|
 | `logic_transport` | play, stop, record, set_tempo, goto_position... | `logic_transport("set_tempo", {tempo: 140})` |
-| `logic_tracks` | select, create_audio, mute, solo, arm, rename... | `logic_tracks("mute", {index: 2, enabled: true})` |
+| `logic_tracks` | select, create_audio, move, mute, solo, arm, rename... | `logic_tracks("mute", {index: 2, enabled: true})` |
 | `logic_mixer` | set_volume, set_pan, insert_plugin, bypass_plugin... | `logic_mixer("set_volume", {track: 0, value: 0.8})` |
 | `logic_midi` | send_note, send_cc, send_chord, mmc_play... | `logic_midi("send_note", {note: 60, velocity: 100, channel: 1, duration_ms: 500})` |
 | `logic_edit` | undo, redo, cut, copy, paste, quantize, split... | `logic_edit("quantize", {value: "1/16"})` |

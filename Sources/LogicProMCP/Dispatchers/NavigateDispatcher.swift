@@ -14,7 +14,10 @@ struct NavigateDispatcher {
             create_marker -> { name: String } (at current playhead); \
             rename_marker -> { index: Int, name: String }; \
             delete_marker -> { index: Int }; \
-            set_zoom -> { level: String } ("in", "out", "fit"); \
+            set_zoom -> { level: String ("in"|"out"|"fit"), axis: String \
+            ("horizontal" (default)|"vertical"), steps: Int (1-10, default 1) } — \
+            vertical zoom changes the track row height and is verified; it needs the \
+            keyboard focus in the arrange area; \
             toggle_view -> { view: String } ("mixer", "piano_roll", "score", \
             "step_editor", "library", "inspector", "automation")
             """,
@@ -100,31 +103,37 @@ struct NavigateDispatcher {
             return CallTool.Result(content: [.text(result.message)], isError: !result.isSuccess)
 
         case "set_zoom":
+            // Logic has no "set an absolute zoom level" command — only stepwise zoom key
+            // commands. The old numeric `level` parameter mapped to nothing at all and
+            // always failed with "No keyboard shortcut mapped for: nav.set_zoom_level".
             let level = params["level"]?.stringValue ?? "fit"
-            switch level {
-            case "in":
-                let result = await router.route(
-                    operation: "nav.set_zoom_level",
-                    params: ["level": "8"]
-                )
-                return CallTool.Result(content: [.text(result.message)], isError: !result.isSuccess)
-            case "out":
-                let result = await router.route(
-                    operation: "nav.set_zoom_level",
-                    params: ["level": "2"]
-                )
-                return CallTool.Result(content: [.text(result.message)], isError: !result.isSuccess)
-            case "fit":
+            let axis = params["axis"]?.stringValue ?? "horizontal"
+            let steps = max(1, min(10, params["steps"]?.intValue ?? 1))
+
+            if level == "fit" {
                 let result = await router.route(operation: "nav.zoom_to_fit")
                 return CallTool.Result(content: [.text(result.message)], isError: !result.isSuccess)
-            default:
-                // Treat as numeric zoom level
-                let result = await router.route(
-                    operation: "nav.set_zoom_level",
-                    params: ["level": level]
-                )
-                return CallTool.Result(content: [.text(result.message)], isError: !result.isSuccess)
             }
+            guard level == "in" || level == "out" else {
+                return CallTool.Result(
+                    content: [.text("Unknown zoom level: \(level). Use \"in\", \"out\" or \"fit\".")],
+                    isError: true
+                )
+            }
+            guard axis == "horizontal" || axis == "vertical" else {
+                return CallTool.Result(
+                    content: [.text("Unknown zoom axis: \(axis). Use \"horizontal\" or \"vertical\".")],
+                    isError: true
+                )
+            }
+            let operation = "nav.zoom_\(level == "in" ? "in" : "out")"
+                + (axis == "vertical" ? "_vertical" : "")
+
+            var lastResult = await router.route(operation: operation)
+            for _ in 1..<steps where lastResult.isSuccess {
+                lastResult = await router.route(operation: operation)
+            }
+            return CallTool.Result(content: [.text(lastResult.message)], isError: !lastResult.isSuccess)
 
         case "toggle_view":
             let view = params["view"]?.stringValue ?? "mixer"

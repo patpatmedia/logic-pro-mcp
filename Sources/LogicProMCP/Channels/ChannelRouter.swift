@@ -34,11 +34,15 @@ actor ChannelRouter {
         "track.select":               [.accessibility],
         "track.select_add":           [.accessibility],
         "track.create_stack":         [.accessibility],
-        "track.create_audio":         [.cgEvent, .accessibility],
-        "track.create_instrument":    [.cgEvent, .accessibility],
-        "track.create_drummer":       [.cgEvent, .accessibility],
-        "track.create_external_midi": [.cgEvent, .accessibility],
-        "track.delete":               [.cgEvent, .accessibility],
+        "track.move":                 [.accessibility],
+        // Single-channel by design: these are verified against Logic's actual track
+        // count. A fallback would fire the same command a second time after a *verified*
+        // failure — and if the first one did land late, that creates two tracks.
+        "track.create_audio":         [.cgEvent],
+        "track.create_instrument":    [.cgEvent],
+        "track.create_drummer":       [.accessibility],
+        "track.create_external_midi": [.accessibility],
+        "track.delete":               [.cgEvent],
         "track.rename":               [.accessibility],
         "track.set_mute":             [.accessibility, .cgEvent],
         "track.set_solo":             [.accessibility, .cgEvent],
@@ -88,7 +92,10 @@ actor ChannelRouter {
         "nav.rename_marker":          [.accessibility],
         "nav.get_markers":            [.accessibility],
         "nav.zoom_to_fit":            [.cgEvent],
-        "nav.set_zoom_level":         [.cgEvent],
+        "nav.zoom_in":                [.cgEvent],
+        "nav.zoom_out":               [.cgEvent],
+        "nav.zoom_in_vertical":       [.cgEvent],
+        "nav.zoom_out_vertical":      [.cgEvent],
 
         // Editing — keyboard primary
         "edit.undo":                  [.cgEvent, .accessibility],
@@ -186,7 +193,11 @@ actor ChannelRouter {
             return .success("No channel required for \(operation)")
         }
 
-        var lastError: String = "No channels available"
+        // Collect every channel's reason rather than only the last one. Reporting just
+        // the final link in the chain routinely hid the informative error behind a
+        // trailing "No keyboard shortcut mapped for: …" from a channel that never had a
+        // chance of handling the operation.
+        var errors: [String] = []
 
         for channelID in chain {
             guard let channel = channels[channelID] else {
@@ -197,7 +208,7 @@ actor ChannelRouter {
             let health = await channel.healthCheck()
             guard health.available else {
                 Log.debug("Channel \(channelID.rawValue) unhealthy: \(health.detail), trying next", subsystem: "router")
-                lastError = "Channel \(channelID.rawValue): \(health.detail)"
+                errors.append("\(channelID.rawValue): \(health.detail)")
                 continue
             }
 
@@ -207,12 +218,25 @@ actor ChannelRouter {
                 Log.debug("\(operation) succeeded via \(channelID.rawValue)", subsystem: "router")
                 return result
             case .error(let msg):
+                // A modal dialog blocks the app itself, not just this channel — every
+                // remaining channel would fail the same way. Report it and stop.
+                if msg.hasPrefix(BlockingDialog.messagePrefix) {
+                    return result
+                }
                 Log.debug("\(operation) failed via \(channelID.rawValue): \(msg), trying next", subsystem: "router")
-                lastError = msg
+                errors.append("\(channelID.rawValue): \(msg)")
             }
         }
 
-        return .error("All channels exhausted for \(operation). Last error: \(lastError)")
+        if errors.isEmpty {
+            return .error("No channel is registered for \(operation)")
+        }
+        if errors.count == 1 {
+            return .error("\(operation) failed — \(errors[0])")
+        }
+        return .error(
+            "All channels exhausted for \(operation). Errors: \(errors.joined(separator: " | "))"
+        )
     }
 
     /// Get health status for all registered channels.

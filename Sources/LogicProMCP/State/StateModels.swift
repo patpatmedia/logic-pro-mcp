@@ -23,6 +23,8 @@ enum TrackType: String, Sendable, Codable {
     case aux
     case bus
     case master
+    /// Folder or Summing Stack master row (has a disclosure triangle).
+    case trackStack = "track_stack"
     case unknown
 }
 
@@ -35,21 +37,57 @@ struct TrackState: Sendable, Codable, Identifiable {
     var isSoloed: Bool = false
     var isArmed: Bool = false
     var isSelected: Bool = false
-    var volume: Double = 0.0   // dB, 0 = unity
-    var pan: Double = 0.0      // -1.0 (L) to 1.0 (R)
+    /// nil when the fader could not be read — NOT the same as 0. Logic stops exposing the
+    /// header sliders at small track heights; reporting 0 there looked like the project
+    /// had lost all its levels and invited "restoring" values that were never lost.
+    var volume: Double?
+    /// nil when the pan control could not be read. See `volume`.
+    var pan: Double?
     var color: String?
+
+    /// Written by hand so unreadable values appear as an explicit `null` in the JSON.
+    /// The synthesized encoder omits nil keys entirely, which leaves a reader guessing
+    /// whether a value is missing or was never asked for.
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(type, forKey: .type)
+        try container.encode(isMuted, forKey: .isMuted)
+        try container.encode(isSoloed, forKey: .isSoloed)
+        try container.encode(isArmed, forKey: .isArmed)
+        try container.encode(isSelected, forKey: .isSelected)
+        try container.encode(volume, forKey: .volume)
+        try container.encode(pan, forKey: .pan)
+        try container.encode(color, forKey: .color)
+    }
 }
 
 /// Mixer channel strip state (extends track with routing info).
 struct ChannelStripState: Sendable, Codable {
     var trackIndex: Int
-    var volume: Double = 0.0
-    var pan: Double = 0.0
+    /// nil when the fader could not be read (see `TrackState.volume`).
+    var volume: Double?
+    /// nil when the pan control could not be read.
+    var pan: Double?
     var sends: [SendState] = []
     var input: String?
     var output: String?
     var eqEnabled: Bool = false
     var plugins: [PluginSlotState] = []
+
+    /// Explicit `null` for unreadable controls — see `TrackState.encode(to:)`.
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(trackIndex, forKey: .trackIndex)
+        try container.encode(volume, forKey: .volume)
+        try container.encode(pan, forKey: .pan)
+        try container.encode(sends, forKey: .sends)
+        try container.encode(input, forKey: .input)
+        try container.encode(output, forKey: .output)
+        try container.encode(eqEnabled, forKey: .eqEnabled)
+        try container.encode(plugins, forKey: .plugins)
+    }
 }
 
 /// A send on a channel strip.

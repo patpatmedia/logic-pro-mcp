@@ -49,7 +49,8 @@ struct SystemDispatcher {
             let snap = await cache.snapshot()
             let cacheInfo: [String: String] = [
                 "poll_mode": snap.pollMode,
-                "transport_age_sec": String(format: "%.1f", snap.transportAge),
+                // "never" instead of a bogus age when no transport read ever succeeded.
+                "transport_age_sec": snap.transportAge.map { String(format: "%.1f", $0) } ?? "never",
                 "track_count": String(snap.trackCount),
                 "project": snap.projectName,
             ]
@@ -116,10 +117,17 @@ struct SystemDispatcher {
             return """
                 logic_tracks commands:
                   select            -> { index: Int } or { name: String }
+                  select_add        -> { index: Int } — extend the selection (Cmd-click)
                   create_audio      -> {} — New audio track
                   create_instrument -> {} — New software instrument track
-                  create_drummer    -> {} — New Drummer track
-                  create_external_midi -> {} — New external MIDI track
+                  create_drummer    -> {} — New Drummer track (via Track menu)
+                  create_external_midi -> {} — New external MIDI track (via Track menu)
+                  create_stack      -> { indices: [Int], type: String }
+                                       type: "folder" (default) or "summing";
+                                       omit indices to use the current selection
+                  move              -> { index: Int, before: Int } — drag the track so it
+                                       ends up directly above track `before`.
+                                       UPWARDS ONLY (before < index); see note below.
                   delete            -> { index: Int }
                   duplicate         -> { index: Int }
                   rename            -> { index: Int, name: String }
@@ -127,6 +135,17 @@ struct SystemDispatcher {
                   solo              -> { index: Int, enabled: Bool }
                   arm               -> { index: Int, enabled: Bool }
                   set_color         -> { index: Int, color: Int } (0-24)
+
+                Notes:
+                  - create_*, duplicate, delete and move are verified against Logic's real
+                    track list. They return an error when nothing changed, so indices can
+                    be trusted after a success.
+                  - Rows are scrolled into view automatically before being clicked.
+                  - move works upwards only. Logic has no stable drop offset downwards, so
+                    build lists bottom-up: create each track below its destination and
+                    move it up.
+                  - volume/pan are null when Logic doesn't expose the header sliders (very
+                    small track heights). null means "not readable", not "zero".
 
                 Read state via resources: logic://tracks, logic://tracks/{index}
                 """
@@ -194,7 +213,12 @@ struct SystemDispatcher {
                   delete_marker     -> { index: Int }
                   rename_marker     -> { index: Int, name: String }
                   zoom_to_fit       -> {}
-                  set_zoom          -> { level: String } ("in", "out", "fit")
+                  set_zoom          -> { level: "in"|"out"|"fit",
+                                         axis: "horizontal" (default)|"vertical",
+                                         steps: Int 1-10 (default 1) }
+                                       vertical zoom changes the track row height and is
+                                       verified; it requires the keyboard focus in the
+                                       arrange area
                   toggle_view       -> { view: String } (mixer, piano_roll, score,
                                        step_editor, library, inspector, automation)
                 """

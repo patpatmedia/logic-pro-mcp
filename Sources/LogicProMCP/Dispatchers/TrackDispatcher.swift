@@ -6,10 +6,12 @@ struct TrackDispatcher {
         name: "logic_tracks",
         description: """
             Track actions in Logic Pro. \
-            Commands: select, create_audio, create_instrument, create_drummer, \
-            create_external_midi, create_stack, delete, duplicate, rename, mute, solo, arm, set_color. \
+            Commands: select, select_add, create_audio, create_instrument, create_drummer, \
+            create_external_midi, create_stack, move, delete, duplicate, rename, mute, solo, \
+            arm, set_color. \
             Params by command: \
             select -> { index: Int } or { name: String }; \
+            select_add -> { index: Int } — extends the current selection (Cmd-click); \
             rename -> { index: Int, name: String }; \
             mute/solo/arm -> { index: Int, enabled: Bool }; \
             set_color -> { index: Int, color: Int } (Logic color index 0-24); \
@@ -17,7 +19,11 @@ struct TrackDispatcher {
             create_stack -> { indices: [Int], type: String } — groups the given tracks \
             into a Track Stack ("folder" (default) or "summing"); omit indices to use the \
             current selection; \
-            delete/duplicate -> { index: Int }
+            move -> { index: Int, before: Int } — drags the track so it sits directly \
+            above the track currently at `before`; UPWARDS ONLY (before < index); \
+            delete/duplicate -> { index: Int }. \
+            Creating, duplicating, deleting and moving are verified against Logic's actual \
+            track list and return an error if nothing changed.
             """,
         inputSchema: .object([
             "type": .string("object"),
@@ -63,6 +69,30 @@ struct TrackDispatcher {
                 return CallTool.Result(content: [.text("No track found matching '\(name)'")], isError: true)
             }
             return CallTool.Result(content: [.text("select requires 'index' or 'name' param")], isError: true)
+
+        case "select_add":
+            guard let index = params["index"]?.intValue else {
+                return CallTool.Result(content: [.text("select_add requires an 'index' param")], isError: true)
+            }
+            let result = await router.route(
+                operation: "track.select_add",
+                params: ["index": String(index)]
+            )
+            return CallTool.Result(content: [.text(result.message)], isError: !result.isSuccess)
+
+        case "move":
+            guard let index = params["index"]?.intValue,
+                  let before = params["before"]?.intValue else {
+                return CallTool.Result(
+                    content: [.text("move requires 'index' (track to move) and 'before' (index it should end up above)")],
+                    isError: true
+                )
+            }
+            let result = await router.route(
+                operation: "track.move",
+                params: ["index": String(index), "before": String(before)]
+            )
+            return CallTool.Result(content: [.text(result.message)], isError: !result.isSuccess)
 
         case "create_audio":
             let result = await router.route(operation: "track.create_audio")
@@ -191,7 +221,7 @@ struct TrackDispatcher {
 
         default:
             return CallTool.Result(
-                content: [.text("Unknown track command: \(command). Available: select, create_audio, create_instrument, create_drummer, create_external_midi, create_stack, delete, duplicate, rename, mute, solo, arm, set_color")],
+                content: [.text("Unknown track command: \(command). Available: select, select_add, create_audio, create_instrument, create_drummer, create_external_midi, create_stack, move, delete, duplicate, rename, mute, solo, arm, set_color")],
                 isError: true
             )
         }

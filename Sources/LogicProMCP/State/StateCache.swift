@@ -82,7 +82,11 @@ actor StateCache {
     // MARK: - Bulk state for diagnostics
 
     struct CacheSnapshot: Sendable {
-        let transportAge: TimeInterval
+        /// Seconds since the transport was last read successfully, or nil if it never was.
+        /// nil rather than a number computed from `.distantPast` — that produced the
+        /// nonsense "transport_age_sec: 63920839368" (≈2000 years) that looked like a
+        /// broken timestamp conversion instead of "no transport read has ever succeeded".
+        let transportAge: TimeInterval?
         let trackCount: Int
         let regionCount: Int
         let markerCount: Int
@@ -101,7 +105,9 @@ actor StateCache {
             mode = "idle"
         }
         return CacheSnapshot(
-            transportAge: Date().timeIntervalSince(transport.lastUpdated),
+            transportAge: transport.lastUpdated == .distantPast
+                ? nil
+                : Date().timeIntervalSince(transport.lastUpdated),
             trackCount: tracks.count,
             regionCount: regions.count,
             markerCount: markers.count,

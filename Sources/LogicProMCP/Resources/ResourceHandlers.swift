@@ -119,9 +119,9 @@ struct ResourceHandlers {
               "channels": \(channelsJSON),
               "cache": {
                 "poll_mode": "\(snap.pollMode)",
-                "transport_age_sec": \(String(format: "%.1f", snap.transportAge)),
+                "transport_age_sec": \(snap.transportAge.map { String(format: "%.1f", $0) } ?? "null"),
                 "track_count": \(snap.trackCount),
-                "project": "\(snap.projectName)"
+                "project": \(jsonString(snap.projectName))
               },
               "permissions": {
                 "accessibility": \(permissions.accessibility),

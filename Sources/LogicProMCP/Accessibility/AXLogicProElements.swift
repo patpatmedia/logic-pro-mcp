@@ -90,6 +90,56 @@ enum AXLogicProElements {
         return trackRows(in: headers)
     }
 
+    /// The rect in which track header rows are actually *visible* on screen.
+    ///
+    /// IMPORTANT: the frame of the `AXGroup desc="Tracks header"` element is the whole
+    /// scrollable content (observed live: 1924 px tall for 47 tracks, spanning far above
+    /// and below the window), so it must never be used for visibility tests — every row
+    /// would look visible. The enclosing AXScrollArea reports the real viewport; when it
+    /// cannot be found we fall back to the main window minus the toolbar/ruler strip at
+    /// the top and the horizontal scroller at the bottom (measured on Logic 12.3).
+    static func trackHeadersViewport() -> CGRect? {
+        guard let window = mainWindow(), let windowFrame = AXHelpers.elementFrame(window) else {
+            return nil
+        }
+
+        if let headers = getTrackHeaders(),
+           let scrollFrame = enclosingScrollAreaFrame(of: headers, within: windowFrame) {
+            return scrollFrame
+        }
+
+        // Fallback: toolbar + ruler occupy roughly the top 120 px of the window, the
+        // horizontal scroller the bottom ~12 px.
+        let inset = windowFrame.divided(atDistance: 120, from: .minYEdge).remainder
+        let viewport = inset.divided(atDistance: 12, from: .maxYEdge).remainder
+        return viewport.height >= 60 ? viewport : nil
+    }
+
+    /// Walk up from `element` looking for an AXScrollArea whose frame is a plausible
+    /// viewport: inside the window and clearly smaller than the scroll content.
+    private static func enclosingScrollAreaFrame(
+        of element: AXUIElement, within windowFrame: CGRect
+    ) -> CGRect? {
+        var current: AXUIElement? = element
+        for _ in 0..<8 {
+            guard let node = current else { return nil }
+            if AXHelpers.getRole(node) == kAXScrollAreaRole,
+               let frame = AXHelpers.elementFrame(node),
+               frame.height >= 60,
+               windowFrame.insetBy(dx: -2, dy: -2).contains(frame) {
+                return frame
+            }
+            current = AXHelpers.getAttribute(node, kAXParentAttribute)
+        }
+        return nil
+    }
+
+    /// Frame of the track header row at `index`, or nil if the row does not exist.
+    static func trackRowFrame(at index: Int) -> CGRect? {
+        guard let row = findTrackHeader(at: index) else { return nil }
+        return AXHelpers.elementFrame(row)
+    }
+
     // MARK: - Mixer
 
     /// Find the mixer area.
@@ -159,6 +209,46 @@ enum AXLogicProElements {
             if !found { return nil }
         }
         return current
+    }
+
+    /// Find a menu item whose title contains every fragment in `fragments`
+    /// (case-insensitive), searching the whole menu bar including submenus.
+    /// Returns nil when the menus haven't been populated yet.
+    static func findMenuItem(fragments: [String]) -> AXUIElement? {
+        guard let menuBar = getMenuBar(), !fragments.isEmpty else { return nil }
+        return searchMenu(menuBar, fragments: fragments, depth: 6)
+    }
+
+    private static func searchMenu(
+        _ element: AXUIElement, fragments: [String], depth: Int
+    ) -> AXUIElement? {
+        guard depth > 0 else { return nil }
+        for child in AXHelpers.getChildren(element) {
+            if AXHelpers.getRole(child) == kAXMenuItemRole {
+                let title = AXHelpers.getTitle(child) ?? ""
+                if fragments.allSatisfy({ title.localizedCaseInsensitiveContains($0) }) {
+                    return child
+                }
+            }
+            if let found = searchMenu(child, fragments: fragments, depth: depth - 1) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    /// Whether a menu item / control is currently enabled.
+    ///
+    /// Essential before pressing a menu item: `AXUIElementPerformAction(…, kAXPressAction)`
+    /// returns `.success` on a *disabled* item as well, so the press looks like it worked
+    /// while nothing happened. Logic disables its "New … Track" items depending on where
+    /// the focus is, and acting on that false success previously led to work being done
+    /// against track indices that never existed.
+    static func isEnabled(_ element: AXUIElement) -> Bool {
+        guard let enabled: Bool = AXHelpers.getAttribute(element, kAXEnabledAttribute) else {
+            return true  // attribute absent → assume usable
+        }
+        return enabled
     }
 
     /// Locate the "Create Track Stack…" command anywhere in the menu bar.

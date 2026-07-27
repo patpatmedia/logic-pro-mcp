@@ -66,6 +66,76 @@ enum UIInput {
         usleep(stepDelay)
     }
 
+    /// Scroll by `deltaY` pixels at `point` via the global HID tap. Positive values
+    /// scroll the content up (towards the start of the document), i.e. earlier tracks
+    /// come into view — the same direction a physical wheel push produces.
+    ///
+    /// The event is delivered to whatever sits under the *real* cursor, so the cursor is
+    /// warped to `point` first. Used to bring a track header into the visible area before
+    /// clicking it (Logic only accepts clicks on rows that are actually on screen).
+    /// Note: moves the user's actual cursor.
+    static func scrollGlobal(at point: CGPoint, deltaY: Int32) {
+        guard let source = source() else { return }
+        CGWarpMouseCursorPosition(point)
+        usleep(20_000)
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: source,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: deltaY,
+            wheel2: 0,
+            wheel3: 0
+        ) else { return }
+        event.location = point
+        event.post(tap: .cghidEventTap)
+        usleep(stepDelay)
+    }
+
+    /// Press at `from`, move to `to` in many small steps, release. Logic only recognises
+    /// a track-header drag when the movement arrives as a stream of intermediate
+    /// positions — a single jump from press to release is ignored.
+    /// Note: moves the user's actual cursor.
+    static func dragGlobal(
+        from: CGPoint,
+        to: CGPoint,
+        steps: Int = 30,
+        stepDelayMicros: useconds_t = 35_000
+    ) {
+        guard let source = source(), steps > 0 else { return }
+        CGWarpMouseCursorPosition(from)
+        usleep(120_000)
+
+        post(source, .leftMouseDown, at: from)
+        usleep(150_000)
+
+        for step in 1...steps {
+            let progress = Double(step) / Double(steps)
+            let point = CGPoint(
+                x: from.x + (to.x - from.x) * progress,
+                y: from.y + (to.y - from.y) * progress
+            )
+            post(source, .leftMouseDragged, at: point)
+            usleep(stepDelayMicros)
+        }
+
+        // Settle on the final position before releasing: Logic places the insert marker
+        // from the last position it saw, and releasing too early drops the last move.
+        usleep(150_000)
+        post(source, .leftMouseUp, at: to)
+        usleep(250_000)
+    }
+
+    private static func post(_ source: CGEventSource, _ type: CGEventType, at point: CGPoint) {
+        guard let event = CGEvent(
+            mouseEventSource: source,
+            mouseType: type,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        ) else { return }
+        CGWarpMouseCursorPosition(point)
+        event.post(tap: .cghidEventTap)
+    }
+
     /// Post a key chord (key + modifier flags) on the global HID tap, delivered to the
     /// frontmost app like a physical key press. Logic ignores `postToPid` key events for
     /// commands such as ⌘⇧D (Create Track Stack), ⌥⌘A (New Audio Track) or Escape.

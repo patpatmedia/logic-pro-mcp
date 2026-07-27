@@ -91,7 +91,7 @@ enum AXValueExtractors {
         let soloed = extractCheckboxByDescription(from: header, description: "Solo") ?? false
         let armed = extractCheckboxByDescription(from: header, description: "Record Enable") ?? false
         let selected = extractTrackFocusState(from: header)
-        let trackType = inferTrackType(from: header)
+        let trackType = inferTrackType(from: header, name: name)
         let (volume, pan) = extractTrackVolumePan(from: header)
 
         return TrackState(
@@ -210,28 +210,52 @@ enum AXValueExtractors {
 
     /// Read the volume (and pan, if present) sliders from a track header.
     /// Volume slider is described "Volume"; the pan slider is the remaining slider.
-    private static func extractTrackVolumePan(from header: AXUIElement) -> (Double, Double) {
+    ///
+    /// Returns nil for a control that isn't exposed. At small track heights Logic drops
+    /// the header sliders from its AX tree entirely; the previous 0.0 default made that
+    /// read-back artefact indistinguishable from genuinely silenced tracks.
+    private static func extractTrackVolumePan(from header: AXUIElement) -> (Double?, Double?) {
         let sliders = AXHelpers.findAllDescendants(of: header, role: kAXSliderRole, maxDepth: 4)
         let volumeSlider = sliders.first { AXHelpers.getDescription($0) == "Volume" }
         let panSlider = sliders.first { $0 != volumeSlider }
-        let volume = volumeSlider.flatMap { extractSliderValue($0) } ?? 0.0
-        let pan = panSlider.flatMap { extractSliderValue($0) } ?? 0.0
-        return (volume, pan)
+        return (volumeSlider.flatMap { extractSliderValue($0) },
+                panSlider.flatMap { extractSliderValue($0) })
     }
 
-    private static func inferTrackType(from header: AXUIElement) -> TrackType {
-        // Attempt to infer type from icon description or element identifiers
-        let desc = AXHelpers.getDescription(header)?.lowercased() ?? ""
-        let title = AXHelpers.getTitle(header)?.lowercased() ?? ""
-        let combined = desc + " " + title
+    /// Best-effort track type from the row's UI controls.
+    ///
+    /// The row's own AXDescription is just `Track N “NAME”` and carries no type at all —
+    /// matching against it (as this used to) could only ever produce `unknown`, or worse,
+    /// a type guessed from words in the user's track name. So we look at the *controls*
+    /// inside the row, whose descriptions are UI labels, and skip anything containing the
+    /// track name so a track called "Drummer Idee" can't masquerade as a Drummer track.
+    ///
+    /// Deliberately conservative: an unrecognised row stays `unknown` rather than being
+    /// assigned a plausible-looking wrong type.
+    private static func inferTrackType(from header: AXUIElement, name: String) -> TrackType {
+        // A Folder/Summing Stack master is the one row with a disclosure triangle.
+        if AXHelpers.findDescendant(of: header, role: kAXDisclosureTriangleRole, maxDepth: 4) != nil {
+            return .trackStack
+        }
 
-        if combined.contains("audio") { return .audio }
-        if combined.contains("instrument") || combined.contains("software") { return .softwareInstrument }
-        if combined.contains("drummer") { return .drummer }
-        if combined.contains("external") || combined.contains("midi") { return .externalMIDI }
-        if combined.contains("aux") { return .aux }
-        if combined.contains("bus") { return .bus }
-        if combined.contains("master") || combined.contains("stereo out") { return .master }
+        let controlRoles: Set<String> = [
+            kAXButtonRole, kAXCheckBoxRole, kAXRadioButtonRole, kAXImageRole,
+            kAXPopUpButtonRole, kAXMenuButtonRole,
+        ]
+        let needle = name.lowercased()
+        let labels = AXHelpers.findAllDescendants(of: header, maxDepth: 4)
+            .filter { controlRoles.contains(AXHelpers.getRole($0) ?? "") }
+            .compactMap { AXHelpers.getDescription($0) ?? AXHelpers.getTitle($0) }
+            .map { $0.lowercased() }
+            .filter { label in needle.isEmpty || !label.contains(needle) }
+            .joined(separator: " ")
+
+        if labels.contains("drummer") { return .drummer }
+        if labels.contains("software instrument") { return .softwareInstrument }
+        if labels.contains("external midi") { return .externalMIDI }
+        if labels.contains("audio track") || labels.contains("input monitoring") { return .audio }
+        if labels.contains("aux") { return .aux }
+        if labels.contains("stereo out") || labels.contains("master") { return .master }
         return .unknown
     }
 
