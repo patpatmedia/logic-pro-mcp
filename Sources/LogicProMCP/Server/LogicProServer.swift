@@ -81,9 +81,15 @@ actor LogicProServer {
                 )
 
             case "logic_tracks":
-                return await TrackDispatcher.handle(
+                let result = await TrackDispatcher.handle(
                     command: command, params: cmdParams, router: router, cache: cache
                 )
+                // Push the new state into the cache now instead of waiting for the next
+                // poll, so a logic://tracks read straight after a change reflects it.
+                if result.isError != true {
+                    await StateRefresh.tracks(router: router, cache: cache)
+                }
+                return result
 
             case "logic_mixer":
                 return await MixerDispatcher.handle(

@@ -7,11 +7,31 @@ struct TransportState: Sendable, Codable {
     var isPaused: Bool = false
     var isCycleEnabled: Bool = false
     var isMetronomeEnabled: Bool = false
-    var tempo: Double = 120.0
-    var position: String = "1.1.1.1"  // Bar.Beat.Division.Tick
-    var timePosition: String = "00:00:00.000"
+    /// nil when the tempo display could not be read — not a silently invented 120.
+    var tempo: Double?
+    /// Bar.Beat.Division.Tick, nil when not readable.
+    var position: String?
+    /// HH:MM:SS:FF. Logic only exposes the fields of the ruler's *current* display mode,
+    /// so this stays nil while the control bar shows bars & beats.
+    var timePosition: String?
     var sampleRate: Int = 44100
     var lastUpdated: Date = .distantPast
+
+    /// Hand-written so unreadable values appear as explicit `null`; the synthesized
+    /// encoder would drop the keys entirely.
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(isPlaying, forKey: .isPlaying)
+        try container.encode(isRecording, forKey: .isRecording)
+        try container.encode(isPaused, forKey: .isPaused)
+        try container.encode(isCycleEnabled, forKey: .isCycleEnabled)
+        try container.encode(isMetronomeEnabled, forKey: .isMetronomeEnabled)
+        try container.encode(tempo, forKey: .tempo)
+        try container.encode(position, forKey: .position)
+        try container.encode(timePosition, forKey: .timePosition)
+        try container.encode(sampleRate, forKey: .sampleRate)
+        try container.encode(lastUpdated, forKey: .lastUpdated)
+    }
 }
 
 /// Track types in Logic Pro.

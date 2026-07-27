@@ -77,9 +77,16 @@ actor AccessibilityChannel: Channel {
         case "track.move":
             return moveTrack(params: params)
         case "track.create_drummer":
-            return createTrackViaMenu(fragments: ["drummer"], label: "Drummer track")
+            // Logic 12.3 has no "New Drummer Track" any more — Drummer became a Session
+            // Player. Try the classic item first for older versions.
+            return createTrackViaMenu(
+                alternatives: [["drummer"], ["session player"]],
+                label: "Drummer / Session Player track"
+            )
         case "track.create_external_midi":
-            return createTrackViaMenu(fragments: ["external midi"], label: "external MIDI track")
+            return createTrackViaMenu(
+                alternatives: [["external midi"]], label: "external MIDI track"
+            )
         case "track.set_mute":
             return setTrackToggle(params: params, button: "Mute")
         case "track.set_solo":
@@ -166,34 +173,64 @@ actor AccessibilityChannel: Channel {
         return encodeResult(state)
     }
 
+    /// Toggle a control-bar control and confirm its state actually flipped — pressing an
+    /// AX element reports success even when Logic ignores the press.
     private func toggleTransportButton(named name: String) -> ChannelResult {
         guard let button = AXLogicProElements.findTransportButton(named: name) else {
-            return .error("Cannot find transport button: \(name)")
+            return .error("Cannot find transport control: \(name)")
         }
+        let before = AXValueExtractors.extractCheckboxState(button)
         guard AXHelpers.performAction(button, kAXPressAction) else {
-            return .error("Failed to press transport button: \(name)")
+            return .error("Failed to press transport control: \(name)")
         }
-        return .success("{\"toggled\":\"\(name)\"}")
+        guard let before else {
+            // State not readable — report the press without claiming an effect.
+            return .success("{\"pressed\":\"\(name)\",\"verified\":false}")
+        }
+        for attempt in 0..<8 {
+            if attempt > 0 { usleep(80_000) }
+            if let now = AXValueExtractors.extractCheckboxState(button), now != before {
+                return .success("{\"toggled\":\"\(name)\",\"enabled\":\(now),\"verified\":true}")
+            }
+        }
+        return .error(
+            "Pressing \"\(name)\" did not change its state (still "
+            + "\(before ? "on" : "off")) — Logic ignored the press."
+        )
     }
 
+    /// Set the project tempo via the control bar's tempo display, verified by reading it
+    /// back. The display is an **AXSlider** described "Tempo" (not a text field, which is
+    /// why this never found anything).
     private func setTempo(params: [String: String]) -> ChannelResult {
-        guard let tempoStr = params["tempo"], let _ = Double(tempoStr) else {
+        guard let tempoStr = params["tempo"], let tempo = Double(tempoStr) else {
             return .error("Missing or invalid 'tempo' parameter")
         }
         guard let transport = AXLogicProElements.getTransportBar() else {
-            return .error("Cannot locate transport bar")
+            return .error("Cannot locate the control bar")
         }
-        // Find the tempo text field and set its value
-        let texts = AXHelpers.findAllDescendants(of: transport, role: kAXTextFieldRole, maxDepth: 4)
-        for field in texts {
-            let desc = AXHelpers.getDescription(field)?.lowercased() ?? ""
-            if desc.contains("tempo") || desc.contains("bpm") {
-                AXHelpers.setAttribute(field, kAXValueAttribute, tempoStr as CFTypeRef)
-                AXHelpers.performAction(field, kAXConfirmAction)
-                return .success("{\"tempo\":\(tempoStr)}")
+        let sliders = AXHelpers.findAllDescendants(of: transport, role: kAXSliderRole, maxDepth: 5)
+        guard let display = sliders.first(where: {
+            AXHelpers.getDescription($0)?.lowercased() == "tempo"
+        }) else {
+            return .error("Cannot locate the tempo display in the control bar")
+        }
+        guard AXHelpers.setAttribute(display, kAXValueAttribute, NSNumber(value: tempo)) else {
+            return .error("Logic refused the tempo value \(tempo) (AX set failed)")
+        }
+        AXHelpers.performAction(display, kAXConfirmAction)
+
+        for attempt in 0..<6 {
+            if attempt > 0 { usleep(80_000) }
+            if let now = AXValueExtractors.extractSliderValue(display), abs(now - tempo) < 0.51 {
+                return .success("{\"tempo\":\(now),\"verified\":true}")
             }
         }
-        return .error("Cannot locate tempo field")
+        let actual = AXValueExtractors.extractSliderValue(display)
+        return .error(
+            "Tempo was set to \(tempo) but the control bar still reads "
+            + "\(actual.map { String($0) } ?? "unreadable")."
+        )
     }
 
     private func setCycleRange(params: [String: String]) -> ChannelResult {
@@ -275,8 +312,14 @@ actor AccessibilityChannel: Channel {
         guard var frame = AXLogicProElements.trackRowFrame(at: index) else {
             return "Track \(index) has no screen position (row not found)"
         }
-        // Leave a little air so a row is not clicked right on the viewport edge.
+        // A row flush against the viewport edge IS visible and clickable — accept it with
+        // a small tolerance. Only the scroll *target* keeps a margin, so a row that needs
+        // moving doesn't end up sitting exactly on the edge.
+        let tolerance: CGFloat = 2
         let margin: CGFloat = 4
+        let isVisible = { (row: CGRect) in
+            row.minY >= viewport.minY - tolerance && row.maxY <= viewport.maxY + tolerance
+        }
 
         // Scroll polarity is determined from the first step's effect rather than assumed,
         // so a reversed wheel convention costs one step instead of failing outright.
@@ -284,9 +327,7 @@ actor AccessibilityChannel: Channel {
         var lastDistance: CGFloat?
 
         for _ in 0..<14 {
-            if frame.minY >= viewport.minY + margin && frame.maxY <= viewport.maxY - margin {
-                return nil
-            }
+            if isVisible(frame) { return nil }
             let delta: CGFloat = frame.minY < viewport.minY + margin
                 ? (viewport.minY + margin) - frame.minY          // row above view
                 : (viewport.maxY - margin) - frame.maxY          // row below view
@@ -314,9 +355,7 @@ actor AccessibilityChannel: Channel {
             frame = updated
         }
 
-        if frame.minY >= viewport.minY + margin && frame.maxY <= viewport.maxY - margin {
-            return nil
-        }
+        if isVisible(frame) { return nil }
         return "Track \(index) could not be scrolled into the visible track area "
             + "(row at y \(Int(frame.minY))…\(Int(frame.maxY)), visible area "
             + "y \(Int(viewport.minY))…\(Int(viewport.maxY)))."
@@ -474,47 +513,77 @@ actor AccessibilityChannel: Channel {
     // MARK: - Track creation via menu
 
     /// Create a track through its Track-menu item, for the track types Logic has no
-    /// dependable default key command for. Verified by the row count, and guarded against
-    /// the disabled-menu-item trap: pressing a greyed-out item reports success while
-    /// doing nothing at all.
-    private func createTrackViaMenu(fragments: [String], label: String) -> ChannelResult {
+    /// dependable default key command for. `alternatives` holds title-fragment sets tried
+    /// in order, so a renamed menu item in a newer Logic can be covered.
+    ///
+    /// Verified by the row count, and guarded against two traps found live: pressing a
+    /// greyed-out item reports `.success` while doing nothing, and some items ("New
+    /// Session Player SI Track…") open a chooser sheet instead of creating a track.
+    private func createTrackViaMenu(
+        alternatives: [[String]], label: String
+    ) -> ChannelResult {
         let before = AXLogicProElements.allTrackHeaders().count
 
-        guard let item = AXLogicProElements.findMenuItem(fragments: ["new"] + fragments)
-            ?? AXLogicProElements.findMenuItem(fragments: fragments) else {
+        let item = alternatives.lazy.compactMap { fragments in
+            AXLogicProElements.findMenuItem(fragments: ["new"] + fragments)
+                ?? AXLogicProElements.findMenuItem(fragments: fragments)
+        }.first
+        guard let item else {
             return .error(
-                "Cannot find the \"New \(label)\" menu item. Open Logic's Track menu once so "
-                + "macOS populates it, then retry. Nothing was changed."
+                "Cannot find a menu item for a \(label) in Logic's menus. Nothing was changed."
             )
         }
+        let title = AXHelpers.getTitle(item) ?? label
         guard AXLogicProElements.isEnabled(item) else {
             return .error(
-                "Logic has the \"New \(label)\" menu item disabled right now (it depends on "
-                + "where the focus is). Click a track header in the arrange area first. "
-                + "Nothing was changed."
+                "Logic has \"\(title)\" disabled right now (it depends on where the focus is). "
+                + "Select a track in the arrange area first. Nothing was changed."
             )
         }
         guard AXHelpers.performAction(item, kAXPressAction) else {
-            return .error("Pressing the \"New \(label)\" menu item failed. Nothing was changed.")
+            return .error("Pressing \"\(title)\" failed. Nothing was changed.")
         }
 
         for attempt in 0..<16 {
             usleep(100_000)
+            if AXLogicProElements.frontSheet() != nil {
+                return cancelSheetAfterMenuPress(title: title)
+            }
             let now = AXLogicProElements.allTrackHeaders().count
             if now > before {
                 return .success(
-                    "{\"created\":\"\(label)\",\"verified\":true,\"track_count\":\(now),"
-                    + "\"checks\":\(attempt + 1)}"
+                    "{\"created\":\"\(label)\",\"menu_item\":\(jsonString(title)),"
+                    + "\"verified\":true,\"track_count\":\(now),\"checks\":\(attempt + 1)}"
                 )
             }
         }
-        var message = "The \"New \(label)\" menu item was pressed but the track count is still "
-            + "\(before) after 1.6 s — no track was created. Nothing changed, so do not assume "
-            + "any new track index."
+        var message = "\"\(title)\" was pressed but the track count is still \(before) after "
+            + "1.6 s — no track was created. Nothing changed, so do not assume any new track index."
         if let blocked = BlockingDialog.blockingMessage() {
             message += " " + blocked
         }
         return .error(message)
+    }
+
+    /// A menu item that opens a chooser instead of creating a track cannot be completed
+    /// without knowing the user's intent. Cancel the sheet we opened — leaving it up would
+    /// block every following command — and say so plainly.
+    private func cancelSheetAfterMenuPress(title: String) -> ChannelResult {
+        UIInput.keyChordGlobal(53, flags: [])  // Escape
+        var dismissed = false
+        for _ in 0..<8 {
+            usleep(120_000)
+            if AXLogicProElements.frontSheet() == nil {
+                dismissed = true
+                break
+            }
+        }
+        let base = "\"\(title)\" opens a chooser dialog in Logic rather than creating a track "
+            + "directly, so it cannot be completed from here. No track was created."
+        return .error(dismissed
+            ? base + " The dialog was cancelled again; nothing changed."
+            : base + " WARNING: the dialog is still open and will block further commands — "
+                + "please dismiss it in Logic.")
     }
 
     // MARK: - Track reordering
@@ -902,11 +971,46 @@ actor AccessibilityChannel: Channel {
         guard let window = AXLogicProElements.mainWindow() else {
             return .error("Cannot locate Logic Pro main window")
         }
-        let title = AXHelpers.getTitle(window) ?? "Unknown"
         var info = ProjectInfo()
-        info.name = title
+        info.name = Self.projectName(fromWindowTitle: AXHelpers.getTitle(window))
+        // Tempo and time signature are readable from the control bar; without them
+        // logic://project/info only ever returned the struct's defaults.
+        if let bar = AXLogicProElements.getTransportBar() {
+            let sliders = AXHelpers.findAllDescendants(of: bar, role: kAXSliderRole, maxDepth: 5)
+            if let tempoSlider = sliders.first(where: {
+                AXHelpers.getDescription($0)?.lowercased() == "tempo"
+            }), let tempo = AXValueExtractors.extractSliderValue(tempoSlider) {
+                info.tempo = tempo
+            }
+            let popups = AXHelpers.findAllDescendants(of: bar, role: kAXPopUpButtonRole, maxDepth: 5)
+            if let sigPopup = popups.first(where: {
+                AXHelpers.getDescription($0)?.lowercased() == "time signature"
+            }), let signature = AXHelpers.getValue(sigPopup) as? String {
+                info.timeSignature = signature
+            }
+        }
         info.lastUpdated = Date()
         return encodeResult(info)
+    }
+
+    /// Logic's window title is "<project> - <view>", e.g. "Untitled 3 - Tracks". Strip the
+    /// view so the reported project name is the project, not the window caption.
+    private static func projectName(fromWindowTitle title: String?) -> String {
+        guard let title, !title.isEmpty else { return "" }
+        // Only cut at the last " - " when what follows looks like a view name (one or two
+        // words, no digits) — project names containing " - " must survive.
+        let separators = [" - ", " – "]
+        for separator in separators {
+            guard let range = title.range(of: separator, options: .backwards) else { continue }
+            let suffix = title[range.upperBound...]
+            let words = suffix.split(separator: " ")
+            let looksLikeView = (1...2).contains(words.count)
+                && !suffix.contains(where: \.isNumber)
+            if looksLikeView {
+                return String(title[..<range.lowerBound])
+            }
+        }
+        return title
     }
 
     // MARK: - JSON encoding

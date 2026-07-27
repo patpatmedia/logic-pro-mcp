@@ -19,32 +19,47 @@ enum AXLogicProElements {
 
     // MARK: - Transport
 
-    /// Find the transport bar area (toolbar/group containing play, stop, record, etc.)
+    /// Find the transport bar area (the group containing play, stop, record, tempo…).
+    ///
+    /// Logic 12.3 has **no AXToolbar at all** — the transport lives in
+    /// `AXGroup desc="Control Bar"`. Looking for a toolbar (or a group with the
+    /// identifier "Transport", which also doesn't exist) meant this returned nil every
+    /// time and every transport read/write failed.
     static func getTransportBar() -> AXUIElement? {
         guard let window = mainWindow() else { return nil }
-        // Logic Pro's transport is typically an AXToolbar or AXGroup near the top
+        if let bar = AXHelpers.findDescendant(
+            of: window, role: kAXGroupRole, description: "Control Bar", maxDepth: 4
+        ) {
+            return bar
+        }
+        // Version fallbacks for older layouts.
         if let toolbar = AXHelpers.findChild(of: window, role: kAXToolbarRole) {
             return toolbar
         }
-        // Fallback: search for a group containing transport-like buttons
         return AXHelpers.findDescendant(of: window, role: kAXGroupRole, identifier: "Transport")
     }
 
-    /// Find a specific transport button by its title or description.
+    /// Find a transport control by name, e.g. "Cycle" or "Metronome".
+    ///
+    /// Most control-bar toggles are AXCheckBoxes (only Stop and Flashback Capture are
+    /// AXButtons), and some carry a longer label than the name we look for
+    /// ("Metronome Click"), so matching is by role-agnostic description prefix.
     static func findTransportButton(named name: String) -> AXUIElement? {
         guard let transport = getTransportBar() else { return nil }
-        // Try by title first
-        if let button = AXHelpers.findDescendant(of: transport, role: kAXButtonRole, title: name) {
-            return button
+        let candidates = AXHelpers.findAllDescendants(of: transport, maxDepth: 4).filter {
+            let role = AXHelpers.getRole($0)
+            return role == kAXCheckBoxRole || role == kAXButtonRole || role == kAXRadioButtonRole
         }
-        // Try by description (some buttons use AXDescription instead of AXTitle)
-        let buttons = AXHelpers.findAllDescendants(of: transport, role: kAXButtonRole, maxDepth: 4)
-        for button in buttons {
-            if AXHelpers.getDescription(button) == name {
-                return button
-            }
+        // Exact description first, then prefix, then title.
+        if let exact = candidates.first(where: { AXHelpers.getDescription($0) == name }) {
+            return exact
         }
-        return nil
+        if let prefixed = candidates.first(where: {
+            AXHelpers.getDescription($0)?.localizedCaseInsensitiveContains(name) ?? false
+        }) {
+            return prefixed
+        }
+        return candidates.first { AXHelpers.getTitle($0) == name }
     }
 
     // MARK: - Tracks

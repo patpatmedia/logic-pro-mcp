@@ -108,52 +108,61 @@ enum AXValueExtractors {
         )
     }
 
-    /// Read transport bar elements and build a TransportState.
+    /// Read control-bar elements and build a TransportState.
+    ///
+    /// Verified against Logic 12.3's actual AX tree, which does not match what this used
+    /// to assume: the transport toggles are **AXCheckBox** elements (only Stop is an
+    /// AXButton), and tempo/playhead position are **AXSliders** inside the LCD display
+    /// group — not AXStaticTexts. Searching for buttons and static texts found nothing at
+    /// all, which is why every transport read failed silently and
+    /// `transport_age_sec` never advanced past "never".
     static func extractTransportState(from transport: AXUIElement) -> TransportState {
         var state = TransportState()
 
-        // Find and read transport button states
-        let buttons = AXHelpers.findAllDescendants(of: transport, role: kAXButtonRole, maxDepth: 4)
-        for button in buttons {
-            let desc = AXHelpers.getDescription(button) ?? AXHelpers.getTitle(button) ?? ""
-            let pressed = extractButtonState(button) ?? false
-            let descLower = desc.lowercased()
-
-            if descLower.contains("play") {
-                state.isPlaying = pressed
-            } else if descLower.contains("record") && !descLower.contains("arm") {
-                state.isRecording = pressed
-            } else if descLower.contains("cycle") || descLower.contains("loop") {
-                state.isCycleEnabled = pressed
-            } else if descLower.contains("metronome") || descLower.contains("click") {
-                state.isMetronomeEnabled = pressed
+        for toggle in AXHelpers.findAllDescendants(of: transport, role: kAXCheckBoxRole, maxDepth: 4) {
+            guard let desc = AXHelpers.getDescription(toggle)?.lowercased() else { continue }
+            let on = extractCheckboxState(toggle) ?? false
+            switch desc {
+            case "play": state.isPlaying = on
+            case "record": state.isRecording = on
+            case "cycle": state.isCycleEnabled = on
+            // "Metronome Click" in Logic 12.3.
+            case let d where d.hasPrefix("metronome"): state.isMetronomeEnabled = on
+            default: break
             }
         }
 
-        // Find text fields for tempo, position
-        let texts = AXHelpers.findAllDescendants(of: transport, role: kAXStaticTextRole, maxDepth: 4)
-        for text in texts {
-            guard let value = extractTextValue(text) else { continue }
-            let desc = AXHelpers.getDescription(text) ?? ""
-            let descLower = desc.lowercased()
-
-            if descLower.contains("tempo") || descLower.contains("bpm") {
-                if let tempo = Double(value.replacingOccurrences(of: " BPM", with: "")) {
-                    state.tempo = tempo
-                }
-            } else if descLower.contains("position") || value.contains(".") && value.contains(":") == false {
-                // Bar.Beat.Division.Tick format
-                if value.filter({ $0 == "." }).count >= 2 {
-                    state.position = value
-                }
-            } else if value.contains(":") {
-                // Time format HH:MM:SS
-                state.timePosition = value
+        // LCD display: AXSlider desc="Tempo", plus one slider per playhead-position field
+        // ("bar", "beat", …). Logic exposes only the fields of the ruler's current display
+        // mode, so a missing field stays nil rather than being invented.
+        var positionFields: [String: Int] = [:]
+        for slider in AXHelpers.findAllDescendants(of: transport, role: kAXSliderRole, maxDepth: 5) {
+            guard let desc = AXHelpers.getDescription(slider)?.lowercased(),
+                  let value = extractSliderValue(slider) else { continue }
+            if desc == "tempo" {
+                state.tempo = value
+            } else if positionFieldOrder.contains(desc) || timeFieldOrder.contains(desc) {
+                positionFields[desc] = Int(value)
             }
         }
+        state.position = join(positionFields, order: positionFieldOrder, separator: ".")
+        state.timePosition = join(positionFields, order: timeFieldOrder, separator: ":")
 
         state.lastUpdated = Date()
         return state
+    }
+
+    private static let positionFieldOrder = ["bar", "beat", "division", "tick"]
+    private static let timeFieldOrder = ["hours", "minutes", "seconds", "frames"]
+
+    /// Assemble the readable fields in `order` into a display string, or nil if the
+    /// leading field is absent (i.e. the ruler isn't showing this format at all).
+    private static func join(
+        _ fields: [String: Int], order: [String], separator: String
+    ) -> String? {
+        guard let first = order.first, fields[first] != nil else { return nil }
+        let values = order.compactMap { fields[$0] }
+        return values.map(String.init).joined(separator: separator)
     }
 
     // MARK: - Private helpers

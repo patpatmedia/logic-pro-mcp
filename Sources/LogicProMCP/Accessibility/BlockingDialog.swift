@@ -30,9 +30,17 @@ enum BlockingDialog {
             + "audio setup or unsaved work)."
     }
 
-    /// The focused window if it is a modal dialog/sheet/alert, else nil.
+    /// The modal that currently blocks input, else nil.
     private static func focusedModal() -> AXUIElement? {
         guard let app = AXLogicProElements.appRoot() else { return nil }
+
+        // Sheets attached to the main window block input just as hard, but Logic reports
+        // no focused window for them (verified live: kAXFocusedWindow was nil while a
+        // Session Player sheet was open), so they have to be looked for directly.
+        if let sheet = AXLogicProElements.frontSheet() {
+            return sheet
+        }
+
         guard let focused: AXUIElement = AXHelpers.getAttribute(app, kAXFocusedWindowAttribute)
         else { return nil }
 

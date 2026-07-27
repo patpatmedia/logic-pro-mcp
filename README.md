@@ -42,11 +42,37 @@
 > - **`volume`/`pan` are `null`, not `0`,** when Logic doesn't expose the header sliders
 >   (small track heights). A `0` there was indistinguishable from a project that had lost
 >   its levels.
-> - **Honest diagnostics** — track `type` is derived from the row's controls (and detects
->   Track Stack masters) instead of always reporting `unknown`; `transport_age_sec` says
->   `never` instead of ≈2000 years when no transport read has ever succeeded; the project
->   name is actually polled; the router reports every channel's error instead of only the
->   last one.
+> - **Honest diagnostics** — `transport_age_sec` says `never` instead of ≈2000 years when
+>   no transport read has ever succeeded; the project name is actually polled; the router
+>   reports every channel's error instead of only the last one.
+>
+> ### Round three — verified against a running Logic Pro 12.3
+>
+> Everything above was then exercised live (auto-scroll with rows off screen, a real
+> reorder drag, Track Stack creation, `null` sliders at 20 px row height). That run turned
+> up four more things, all fixed:
+>
+> - **Transport reading never worked at all** — the cause behind the nonsense cache age.
+>   Logic 12.3 has **no `AXToolbar`**: the transport lives in `AXGroup desc="Control Bar"`,
+>   its toggles are **AXCheckBox** elements (only Stop is a button), and tempo/playhead are
+>   **AXSliders**, not static texts. The old code looked for a toolbar containing buttons
+>   and texts, so it found nothing — silently. Reading tempo/position/play/record/cycle/
+>   metronome, toggling cycle & metronome (verified by state read-back) and `set_tempo`
+>   (AXSlider, verified) all work now.
+> - **`create_drummer`:** Logic 12.3 has no "New Drummer Track" — Drummer became a Session
+>   Player, and "New Session Player SI Track…" opens a chooser sheet instead of creating a
+>   track. The command now cancels the sheet it opened and says so, instead of leaving a
+>   modal dialog blocking the app.
+> - **Sheets are detected as blockers too.** `kAXFocusedWindow` is nil while a Logic sheet
+>   is up (verified), so the dialog guard checks the main window's front sheet as well.
+> - **Mutations refresh the cache.** `logic://tracks` is re-read immediately after a
+>   successful track command; the poller's ~2 s lag previously made a fresh change look
+>   like it hadn't happened — the same symptom as a genuinely failed command.
+>
+> Known limits confirmed live: track `type` stays `unknown` for ordinary tracks because
+> Logic exposes no type information in a track row at all (only Track Stack masters are
+> identifiable, via their disclosure triangle), and `timePosition` is nil while the ruler
+> shows bars & beats — Logic only exposes the current display mode's fields.
 
 [![Swift 6.0+](https://img.shields.io/badge/Swift-6.0+-F05138.svg)](https://swift.org)
 [![macOS 14+](https://img.shields.io/badge/macOS-14+-000000.svg?logo=apple)](https://developer.apple.com/macos/)
